@@ -1,44 +1,91 @@
-name: Telegram Library Bot
+name: Library Bot
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # احتياطي فقط: يشتغل كل 6 ساعات إذا فشل الإعادة التلقائية
+    - cron: "0 */6 * * *"
+
+# منع تشغيل أكثر من نسخة واحدة في نفس الوقت
+concurrency:
+  group: library-bot
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write   # مطلوب لإعادة تشغيل الـ workflow تلقائياً
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
-    env:
-      BOT_TOKEN:   ${{ secrets.BOT_TOKEN }}
-      OWNER_ID:    ${{ secrets.OWNER_ID }}
-      API_ID:      ${{ secrets.API_ID }}
-      API_HASH:    ${{ secrets.API_HASH }}
-      SESSION_STR:   ${{ secrets.SESSION_STR }}
-      CHANNELS:      ${{ secrets.CHANNELS }}
-      RELAY_CHAT_ID: ${{ secrets.RELAY_CHAT_ID }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+
+      # ─── استعادة data.json (قاعدة بيانات القنوات) ───
+      - name: Restore data.json
+        uses: actions/cache@v4
+        with:
+          path: data.json
+          key: bot-data-${{ github.run_id }}
+          restore-keys: |
+            bot-data-
+
+      # ─── استعادة bot_persistence.pkl (جلسات المستخدمين) ───
+      - name: Restore bot_persistence
+        uses: actions/cache@v4
+        with:
+          path: bot_persistence.pkl
+          key: bot-persistence-${{ github.run_id }}
+          restore-keys: |
+            bot-persistence-
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Run bot (with auto-restart on crash)
+      - name: Run bot
+        env:
+          BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
+          OWNER_ID:     ${{ secrets.OWNER_ID }}
+          API_ID:       ${{ secrets.API_ID }}
+          API_HASH:     ${{ secrets.API_HASH }}
+          SESSION_STR:  ${{ secrets.SESSION_STR }}
+          RELAY_CHAT_ID: ${{ secrets.RELAY_CHAT_ID }}
+          CHANNELS:     ${{ secrets.CHANNELS }}
+        run: python main.py
+
+      # ─── حفظ data.json بعد التوقف ───
+      - name: Save data.json
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: data.json
+          key: bot-data-${{ github.run_id }}
+
+      # ─── حفظ bot_persistence.pkl بعد التوقف ───
+      - name: Save bot_persistence
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: bot_persistence.pkl
+          key: bot-persistence-${{ github.run_id }}
+
+      # ─── إعادة تشغيل البوت فوراً بعد الانتهاء (يقلل التأخير إلى ~30 ثانية) ───
+      - name: Auto-restart bot
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          while true; do
-            echo "▶  $(date '+%Y-%m-%d %H:%M:%S') -- Starting bot..."
-            python main.py
-            EXIT_CODE=$?
-            echo "⚠  $(date '+%Y-%m-%d %H:%M:%S') -- Bot stopped (exit $EXIT_CODE). Restarting in 10s..."
-            sleep 10
-          done
+          gh workflow run bot_library.yml \
+            --repo ${{ github.repository }} \
+            --ref ${{ github.ref_name }}
