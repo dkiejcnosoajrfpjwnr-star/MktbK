@@ -34,7 +34,7 @@ OWNER_ID     = int(os.environ["OWNER_ID"])
 API_ID       = int(os.environ["API_ID"])
 API_HASH     = os.environ["API_HASH"]
 SESSION_STR  = os.environ["SESSION_STR"]
-RELAY_CHAT_ID = int(os.environ.get("RELAY_CHAT_ID", "0"))  # معرف مجموعة الريلاي
+RELAY_CHAT_ID = int(os.environ.get("RELAY_CHAT_ID") or "0")  # معرف مجموعة الريلاي
 
 # القنوات مفصولة بفاصلة: @ch1,https://t.me/ch2,ch3
 _ENV_CHANNELS = os.environ.get("CHANNELS", "")
