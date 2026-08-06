@@ -10,6 +10,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    PicklePersistence,
     filters,
     ContextTypes,
 )
@@ -376,9 +377,11 @@ async def cb_send_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # -- التشغيل --------------------------------------------------------
 def main() -> None:
+    persistence = PicklePersistence(filepath="bot_persistence.pkl")
     app = (
         Application.builder()
         .token(BOT_TOKEN)
+        .persistence(persistence)
         .post_init(start_pyro)
         .post_shutdown(stop_pyro)
         .build()
