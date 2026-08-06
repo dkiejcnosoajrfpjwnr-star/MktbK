@@ -15,7 +15,8 @@ from telegram.ext import (
 )
 from pyrogram import Client
 from pyrogram.errors import (
-    PeerIdInvalid, ChannelInvalid, UsernameInvalid, FloodWait,
+    PeerIdInvalid, ChannelInvalid, UsernameInvalid,
+    UsernameNotOccupied, FloodWait,
 )
 
 logging.basicConfig(
@@ -225,8 +226,8 @@ async def _search_single_channel(ch: str, query: str, ids: dict) -> list:
                 "chat":   ch,
                 "msg_id": msg.id,
             })
-    except (PeerIdInvalid, ChannelInvalid, UsernameInvalid):
-        logger.warning(f"Cannot access: {ch}")
+    except (PeerIdInvalid, ChannelInvalid, UsernameInvalid, UsernameNotOccupied):
+        logger.warning(f"Channel not found or inaccessible, removing: {ch}")
         data = load_data()
         data.get("channel_ids", {}).pop(ch, None)
         save_data(data)
@@ -305,12 +306,12 @@ def results_keyboard(results: list, page: int) -> InlineKeyboardMarkup:
     end   = start + RESULTS_PER_PAGE
     buttons = []
     for abs_idx, r in enumerate(results[start:end], start=start):
-        buttons.append([InlineKeyboardButton(r["name"][:64], callback_data=f"sb:{abs_idx}")])
+        buttons.append([InlineKeyboardButton(r["name"][:64], callback_data=f"sb:{abs_idx}", style="success")])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("السابق", callback_data=f"pg:{page - 1}"))
+        nav.append(InlineKeyboardButton("السابق", callback_data=f"pg:{page - 1}", style="danger"))
     if end < len(results):
-        nav.append(InlineKeyboardButton("التالي", callback_data=f"pg:{page + 1}"))
+        nav.append(InlineKeyboardButton("التالي", callback_data=f"pg:{page + 1}", style="primary"))
     if nav:
         buttons.append(nav)
     return InlineKeyboardMarkup(buttons)
