@@ -306,12 +306,12 @@ def results_keyboard(results: list, page: int) -> InlineKeyboardMarkup:
     end   = start + RESULTS_PER_PAGE
     buttons = []
     for abs_idx, r in enumerate(results[start:end], start=start):
-        buttons.append([InlineKeyboardButton(r["name"][:64], callback_data=f"sb:{abs_idx}", style="success")])
+        buttons.append([InlineKeyboardButton(r["name"][:64], callback_data=f"sb:{abs_idx}")])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("السابق", callback_data=f"pg:{page - 1}", style="danger"))
+        nav.append(InlineKeyboardButton("السابق", callback_data=f"pg:{page - 1}"))
     if end < len(results):
-        nav.append(InlineKeyboardButton("التالي", callback_data=f"pg:{page + 1}", style="primary"))
+        nav.append(InlineKeyboardButton("التالي", callback_data=f"pg:{page + 1}"))
     if nav:
         buttons.append(nav)
     return InlineKeyboardMarkup(buttons)
