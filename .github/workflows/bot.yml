@@ -15,8 +15,9 @@ jobs:
       OWNER_ID:    ${{ secrets.OWNER_ID }}
       API_ID:      ${{ secrets.API_ID }}
       API_HASH:    ${{ secrets.API_HASH }}
-      SESSION_STR: ${{ secrets.SESSION_STR }}
-      CHANNELS:    ${{ secrets.CHANNELS }}
+      SESSION_STR:   ${{ secrets.SESSION_STR }}
+      CHANNELS:      ${{ secrets.CHANNELS }}
+      RELAY_CHAT_ID: ${{ secrets.RELAY_CHAT_ID }}
 
     steps:
       - name: Checkout repository
