@@ -15,9 +15,7 @@ from telegram.ext import (
 )
 from pyrogram import Client
 from pyrogram.errors import (
-    PeerIdInvalid, ChannelInvalid, UsernameInvalid,
-    FloodWait, UserAlreadyParticipant,
-    InviteHashExpired, ChatAdminRequired,
+    PeerIdInvalid, ChannelInvalid, UsernameInvalid, FloodWait,
 )
 
 logging.basicConfig(
@@ -126,22 +124,6 @@ def is_pdf(msg) -> bool:
 pyro: Optional[Client] = None
 
 
-async def join_channel(username: str) -> None:
-    if not pyro or not pyro.is_connected:
-        return
-    try:
-        await asyncio.wait_for(pyro.join_chat(username), timeout=20)
-        logger.info(f"Joined channel: {username}")
-    except UserAlreadyParticipant:
-        logger.info(f"Already in: {username}")
-    except (ChannelInvalid, UsernameInvalid, PeerIdInvalid):
-        logger.warning(f"Cannot access: {username}")
-    except (InviteHashExpired, ChatAdminRequired) as e:
-        logger.warning(f"Join error {username}: {e}")
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-    except Exception as e:
-        logger.warning(f"Join error {username}: {e}")
 
 
 async def resolve_channel(username: str) -> Optional[int]:
@@ -212,11 +194,9 @@ async def start_pyro(app: Application) -> None:
             save_data(data)
             logger.info(f"Added {added} channels from CHANNELS env var")
 
-    # الانضمام وحل المعرفات لجميع القنوات
+    # حل معرفات جميع القنوات فقط (بدون انضمام)
     data = load_data()
     for ch in data.get("channels", []):
-        await join_channel(ch)
-        await asyncio.sleep(0.5)
         await resolve_channel(ch)
         await asyncio.sleep(0.3)
 
