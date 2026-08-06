@@ -86,6 +86,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          gh workflow run bot_library.yml \
+          gh workflow run bot.yml \
             --repo ${{ github.repository }} \
             --ref ${{ github.ref_name }}
