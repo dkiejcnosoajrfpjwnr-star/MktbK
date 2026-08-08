@@ -3,6 +3,7 @@ import json
 import os
 import logging
 from typing import Optional
+from uuid import uuid4
 
 from telegram import Update
 from telegram.ext import (
@@ -61,6 +62,7 @@ DATA_FILE        = "data.json"
 RESULTS_PER_PAGE = 10
 RELAY_TIMEOUT    = 60
 SEARCH_LIMIT     = 500
+MAX_SEARCH_SESSIONS = 20
 
 _data_cache: Optional[dict] = None
 
@@ -302,17 +304,28 @@ async def deliver_via_relay(user_id: int, chat: str, msg_id: int, bot) -> tuple[
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def results_keyboard(results: list, page: int) -> InlineKeyboardMarkup:
+def results_keyboard(results: list, page: int, search_id: str) -> InlineKeyboardMarkup:
     start = page * RESULTS_PER_PAGE
     end   = start + RESULTS_PER_PAGE
     buttons = []
     for abs_idx, r in enumerate(results[start:end], start=start):
-        buttons.append([InlineKeyboardButton(r["name"][:64], callback_data=f"sb:{abs_idx}")])
+        buttons.append([
+            InlineKeyboardButton(
+                r["name"][:64],
+                callback_data=f"sb:{search_id}:{abs_idx}",
+            )
+        ])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("السابق", callback_data=f"pg:{page - 1}"))
+        nav.append(InlineKeyboardButton(
+            "السابق",
+            callback_data=f"pg:{search_id}:{page - 1}",
+        ))
     if end < len(results):
-        nav.append(InlineKeyboardButton("التالي", callback_data=f"pg:{page + 1}"))
+        nav.append(InlineKeyboardButton(
+            "التالي",
+            callback_data=f"pg:{search_id}:{page + 1}",
+        ))
     if nav:
         buttons.append(nav)
     return InlineKeyboardMarkup(buttons)
@@ -335,7 +348,18 @@ async def handle_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     msg     = await update.message.reply_text(f"جاري البحث عن: {query}...")
     results = await search_books(query, data["channels"])
 
-    # آخر بحث فقط لكل مستخدم
+    # يحتفظ كل بحث بمعرّف مستقل حتى تبقى أزرار الرسائل القديمة
+    # مرتبطة بنتائجها حتى بعد إجراء بحث جديد.
+    search_id = uuid4().hex[:12]
+    sessions = ctx.user_data.setdefault("search_sessions", {})
+    sessions[search_id] = {
+        "results": results,
+        "query": query,
+    }
+    while len(sessions) > MAX_SEARCH_SESSIONS:
+        del sessions[next(iter(sessions))]
+
+    # الإبقاء على آخر بحث في المفاتيح القديمة للتوافق مع أي حالة محفوظة.
     ctx.user_data["results"] = results
     ctx.user_data["query"]   = query
 
@@ -344,27 +368,56 @@ async def handle_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     text = f"نتائج البحث عن: {query}\nعدد النتائج: {len(results)}\n\nاضغط على الكتاب لاستلامه:"
-    await msg.edit_text(text, reply_markup=results_keyboard(results, 0))
+    await msg.edit_text(
+        text,
+        reply_markup=results_keyboard(results, 0, search_id),
+    )
 
 
 async def cb_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q    = update.callback_query
     await q.answer()
-    page    = int(q.data.split(":")[1])
-    results = ctx.user_data.get("results")
-    query   = ctx.user_data.get("query", "")
+    parts = q.data.split(":")
+    if len(parts) == 3:
+        search_id = parts[1]
+        page = int(parts[2])
+        session = ctx.user_data.get("search_sessions", {}).get(search_id)
+        results = session.get("results") if session else None
+        query = session.get("query", "") if session else ""
+    else:
+        # توافق مع الأزرار المنشأة بالإصدار السابق.
+        page = int(parts[1])
+        results = ctx.user_data.get("results")
+        query = ctx.user_data.get("query", "")
+        search_id = uuid4().hex[:12]
+        sessions = ctx.user_data.setdefault("search_sessions", {})
+        sessions[search_id] = {
+            "results": results or [],
+            "query": query,
+        }
     if not results:
         await q.message.edit_text("انتهت الجلسة. ابحث مجدداً.")
         return
     text = f"نتائج البحث عن: {query}\nعدد النتائج: {len(results)}\n\nاضغط على الكتاب لاستلامه:"
-    await q.message.edit_text(text, reply_markup=results_keyboard(results, page))
+    await q.message.edit_text(
+        text,
+        reply_markup=results_keyboard(results, page, search_id),
+    )
 
 
 async def cb_send_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer("جاري الإرسال...")
-    idx     = int(q.data.split(":")[1])
-    results = ctx.user_data.get("results", [])
+    parts = q.data.split(":")
+    if len(parts) == 3:
+        search_id = parts[1]
+        idx = int(parts[2])
+        session = ctx.user_data.get("search_sessions", {}).get(search_id)
+        results = session.get("results", []) if session else []
+    else:
+        # توافق مع الأزرار المنشأة بالإصدار السابق.
+        idx = int(parts[1])
+        results = ctx.user_data.get("results", [])
     if not results or idx >= len(results):
         await q.message.reply_text("انتهت الجلسة. ابحث مجدداً.")
         return
