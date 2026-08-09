@@ -2,9 +2,11 @@ import asyncio
 import json
 import os
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+from pymongo import MongoClient
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -36,6 +38,8 @@ API_ID       = int(os.environ["API_ID"])
 API_HASH     = os.environ["API_HASH"]
 SESSION_STR  = os.environ["SESSION_STR"]
 RELAY_CHAT_ID = int(os.environ.get("RELAY_CHAT_ID") or "0")  # معرف مجموعة الريلاي
+MONGODB_URI  = os.environ["MONGODB_URI"]
+MONGODB_DB   = os.environ.get("MONGODB_DB", "book_bot")
 
 # القنوات مفصولة بفاصلة: @ch1,https://t.me/ch2,ch3
 _ENV_CHANNELS = os.environ.get("CHANNELS", "")
@@ -65,6 +69,24 @@ SEARCH_LIMIT     = 500
 MAX_SEARCH_SESSIONS = 20
 
 _data_cache: Optional[dict] = None
+_mongo_client = MongoClient(
+    MONGODB_URI,
+    serverSelectionTimeoutMS=10000,
+    connectTimeoutMS=10000,
+)
+_mongo_db = _mongo_client[MONGODB_DB]
+_settings_collection = _mongo_db["settings"]
+_searches_collection = _mongo_db["search_sessions"]
+
+
+def init_mongodb() -> None:
+    """يتحقق من اتصال MongoDB وينشئ فهرس انتهاء الجلسات."""
+    _mongo_client.admin.command("ping")
+    _searches_collection.create_index(
+        "created_at",
+        expireAfterSeconds=30 * 24 * 60 * 60,
+    )
+    logger.info("MongoDB connected")
 
 
 # -- مساعدة: تحليل رابط/اسم قناة ---------------------------------
@@ -95,22 +117,80 @@ def load_data() -> dict:
     global _data_cache
     if _data_cache is not None:
         return _data_cache
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            _data_cache = json.load(f)
-            return _data_cache
-    _data_cache = {
-        "channels": [],
-        "channel_ids": {},
-    }
+    document = _settings_collection.find_one({"_id": "app"})
+    if document:
+        _data_cache = {
+            "channels": document.get("channels", []),
+            "channel_ids": document.get("channel_ids", {}),
+        }
+    else:
+        # نقل البيانات القديمة مرة واحدة إن وُجد ملف data.json.
+        _data_cache = {"channels": [], "channel_ids": {}}
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as file:
+                    old_data = json.load(file)
+                _data_cache = {
+                    "channels": old_data.get("channels", []),
+                    "channel_ids": old_data.get("channel_ids", {}),
+                }
+                logger.info("Migrated data.json to MongoDB")
+            except (OSError, json.JSONDecodeError) as error:
+                logger.warning(f"Could not migrate data.json: {error}")
+        _settings_collection.insert_one({
+            "_id": "app",
+            **_data_cache,
+        })
     return _data_cache
 
 
 def save_data(data: dict) -> None:
     global _data_cache
     _data_cache = data
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _settings_collection.replace_one(
+        {"_id": "app"},
+        {
+            "_id": "app",
+            "channels": data.get("channels", []),
+            "channel_ids": data.get("channel_ids", {}),
+        },
+        upsert=True,
+    )
+
+
+def save_search_session(
+    user_id: int,
+    search_id: str,
+    query: str,
+    results: list,
+) -> None:
+    """يحفظ نتائج البحث خارج ذاكرة البوت حتى تبقى بعد إعادة التشغيل."""
+    _searches_collection.replace_one(
+        {"_id": f"{user_id}:{search_id}"},
+        {
+            "_id": f"{user_id}:{search_id}",
+            "user_id": user_id,
+            "search_id": search_id,
+            "query": query,
+            "results": results,
+            "created_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    old_sessions = _searches_collection.find(
+        {"user_id": user_id},
+        {"_id": 1},
+    ).sort("created_at", -1).skip(MAX_SEARCH_SESSIONS)
+    old_ids = [item["_id"] for item in old_sessions]
+    if old_ids:
+        _searches_collection.delete_many({"_id": {"$in": old_ids}})
+
+
+def load_search_session(user_id: int, search_id: str) -> Optional[dict]:
+    return _searches_collection.find_one({
+        "_id": f"{user_id}:{search_id}",
+        "user_id": user_id,
+    })
 
 
 def is_pdf(msg) -> bool:
@@ -156,6 +236,7 @@ async def resolve_channel(username: str) -> Optional[int]:
 
 async def start_pyro(app: Application) -> None:
     global pyro
+    init_mongodb()
     pyro = Client(
         "book_session",
         api_id=API_ID,
@@ -338,6 +419,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.message.text.strip()
+    user_id = update.effective_user.id
     if not query:
         return
     data = load_data()
@@ -356,6 +438,7 @@ async def handle_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "results": results,
         "query": query,
     }
+    save_search_session(user_id, search_id, query, results)
     while len(sessions) > MAX_SEARCH_SESSIONS:
         del sessions[next(iter(sessions))]
 
@@ -382,6 +465,8 @@ async def cb_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         search_id = parts[1]
         page = int(parts[2])
         session = ctx.user_data.get("search_sessions", {}).get(search_id)
+        if not session:
+            session = load_search_session(q.from_user.id, search_id)
         results = session.get("results") if session else None
         query = session.get("query", "") if session else ""
     else:
@@ -413,6 +498,8 @@ async def cb_send_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         search_id = parts[1]
         idx = int(parts[2])
         session = ctx.user_data.get("search_sessions", {}).get(search_id)
+        if not session:
+            session = load_search_session(q.from_user.id, search_id)
         results = session.get("results", []) if session else []
     else:
         # توافق مع الأزرار المنشأة بالإصدار السابق.
