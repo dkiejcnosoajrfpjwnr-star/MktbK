@@ -62,6 +62,8 @@ jobs:
           SESSION_STR:  ${{ secrets.SESSION_STR }}
           RELAY_CHAT_ID: ${{ secrets.RELAY_CHAT_ID }}
           CHANNELS:     ${{ secrets.CHANNELS }}
+          MONGODB_URI:  ${{ secrets.MONGODB_URI }}
+          MONGODB_DB:   ${{ secrets.MONGODB_DB || 'book_bot' }}
         run: python main.py
 
       # ─── حفظ data.json بعد التوقف ───
