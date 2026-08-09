@@ -112,6 +112,29 @@ def parse_env_channels() -> list:
     return result
 
 
+def sync_channels_from_env() -> dict:
+    """يجعل Secret CHANNELS المصدر الوحيد للقنوات المستخدمة."""
+    data = load_data()
+    configured_channels = parse_env_channels()
+    old_ids = data.get("channel_ids", {})
+
+    # حذف القنوات القديمة نهائيًا من قائمة التشغيل، مع الاحتفاظ فقط
+    # بالمعرّفات التي تخص القنوات الموجودة حاليًا في Secret CHANNELS.
+    data["channels"] = configured_channels
+    data["channel_ids"] = {
+        channel: old_ids[channel]
+        for channel in configured_channels
+        if channel in old_ids
+    }
+    save_data(data)
+
+    logger.info(
+        "Using channels from CHANNELS secret: "
+        + (", ".join(configured_channels) if configured_channels else "(none)")
+    )
+    return data
+
+
 # -- البيانات -------------------------------------------------------
 def load_data() -> dict:
     global _data_cache
@@ -266,21 +289,10 @@ async def start_pyro(app: Application) -> None:
     except Exception as e:
         logger.warning(f"Could not load relay group: {e}")
 
-    # دمج قنوات البيئة + الانضمام إليها
-    env_channels = parse_env_channels()
-    if env_channels:
-        data = load_data()
-        added = 0
-        for ch in env_channels:
-            if ch not in data["channels"]:
-                data["channels"].append(ch)
-                added += 1
-        if added:
-            save_data(data)
-            logger.info(f"Added {added} channels from CHANNELS env var")
+    # Secret CHANNELS هو المصدر الوحيد؛ لا ندمج معه MongoDB أو data.json.
+    data = sync_channels_from_env()
 
-    # حل معرفات جميع القنوات فقط (بدون انضمام)
-    data = load_data()
+    # حل معرفات القنوات الموجودة في Secret فقط (بدون انضمام).
     for ch in data.get("channels", []):
         await resolve_channel(ch)
         await asyncio.sleep(0.3)
