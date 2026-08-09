@@ -211,12 +211,12 @@ pyro: Optional[Client] = None
 
 
 
-async def resolve_channel(username: str) -> Optional[int]:
+async def resolve_channel(username: str, refresh: bool = False) -> Optional[int]:
     if not pyro or not pyro.is_connected:
         return None
     data = load_data()
     ids  = data.setdefault("channel_ids", {})
-    if username in ids:
+    if username in ids and not refresh:
         return ids[username]
     try:
         chat = await asyncio.wait_for(pyro.get_chat(username), timeout=20)
@@ -227,7 +227,7 @@ async def resolve_channel(username: str) -> Optional[int]:
     except asyncio.TimeoutError:
         logger.warning(f"Timeout resolving {username}")
     except (PeerIdInvalid, ChannelInvalid, UsernameInvalid):
-        logger.warning(f"Cannot resolve {username}")
+        logger.warning(f"Cannot resolve channel now: {username}")
     except FloodWait as e:
         logger.warning(f"FloodWait {e.value}s resolving {username}")
     except Exception as e:
@@ -283,7 +283,8 @@ async def start_pyro(app: Application) -> None:
     # حل معرفات جميع القنوات فقط (بدون انضمام)
     data = load_data()
     for ch in data.get("channels", []):
-        await resolve_channel(ch)
+        # تحديث المعرّف من اسم القناة حتى لا يبقى معرّف قديم في MongoDB.
+        await resolve_channel(ch, refresh=True)
         await asyncio.sleep(0.3)
 
 
@@ -328,20 +329,65 @@ def search_variants(query: str) -> list[str]:
     add(spaced.replace(" ", "ـ"))
     add(spaced.replace(" ", "ـ").translate(ASCII_DIGITS))
 
+    # عند فشل العبارة كاملة، جرّب الكلمات المهمة وصيغتها بدون "ال".
+    # لا نستخدم هذه الصيغ إلا كمرحلة لاحقة حتى يبقى البحث سريعًا.
+    words = re.findall(r"[^\W_]+", compact_spaces, flags=re.UNICODE)
+    for word in words:
+        if len(word) >= 2:
+            add(word)
+            add(word.translate(ARABIC_DIGITS))
+            if word.startswith("ال") and len(word) > 3:
+                add(word[2:])
+                add(word[2:].translate(ARABIC_DIGITS))
+            if word.startswith("و") and len(word) > 2:
+                add(word[1:])
+                add(word[1:].translate(ARABIC_DIGITS))
+
     return variants
 
 
+async def _collect_channel_search(peer, query: str, limit: int):
+    """يعيد حالة البحث والرسائل بدون إسقاط البحث في بقية القنوات."""
+    found = []
+    try:
+        async for msg in pyro.search_messages(peer, query=query, limit=limit):
+            found.append(msg)
+        return "ok", found
+    except (PeerIdInvalid, ChannelInvalid, UsernameInvalid, UsernameNotOccupied):
+        return "unavailable", []
+    except FloodWait as error:
+        logger.warning(f"FloodWait {error.value}s while searching {peer}")
+        return "temporary", []
+    except Exception as error:
+        logger.warning(f"Search temporarily failed for {peer}: {error}")
+        return "temporary", []
+
+
 async def _search_single_channel(ch: str, query: str, ids: dict) -> list:
-    peer = ids.get(ch) or ch
     results = []
     seen_message_ids = set()
-    try:
-        for search_query in search_variants(query):
-            async for msg in pyro.search_messages(
+    variants = search_variants(query)
+    cached_peer = ids.get(ch)
+    # اسم القناة العامة أولًا: لا يحتاج الحساب إلى الانضمام إليها.
+    # المعرّف المحفوظ يبقى كخطة بديلة إذا تعذر حل الاسم مؤقتًا.
+    peers = [ch, cached_peer] if cached_peer and cached_peer != ch else [ch]
+
+    # ابدأ بالصيغة الأصلية الأسرع، ثم البدائل فقط عند عدم وجود نتائج.
+    for peer_index, peer in enumerate(peers):
+        channel_status = "ok"
+        for variant_index, search_query in enumerate(variants):
+            limit = SEARCH_LIMIT if variant_index == 0 else min(SEARCH_LIMIT, 100)
+            channel_status, messages = await _collect_channel_search(
                 peer,
-                query=search_query,
-                limit=SEARCH_LIMIT,
-            ):
+                search_query,
+                limit,
+            )
+            if channel_status == "unavailable":
+                # إذا كان الاسم غير قابل للحل، جرّب المعرّف كخطة بديلة.
+                break
+            if channel_status == "temporary":
+                break
+            for msg in messages:
                 if msg.id in seen_message_ids or not is_pdf(msg):
                     continue
                 seen_message_ids.add(msg.id)
@@ -355,15 +401,16 @@ async def _search_single_channel(ch: str, query: str, ids: dict) -> list:
                     "chat":   ch,
                     "msg_id": msg.id,
                 })
-    except (PeerIdInvalid, ChannelInvalid, UsernameInvalid, UsernameNotOccupied):
-        logger.warning(f"Channel not found or inaccessible, removing: {ch}")
-        data = load_data()
-        data.get("channel_ids", {}).pop(ch, None)
-        save_data(data)
-    except FloodWait as e:
-        logger.warning(f"FloodWait {e.value}s in {ch} - skipping")
-    except Exception as e:
-        logger.error(f"Search error ({ch}): {e}")
+            # البحث الأصلي كافٍ غالبًا؛ لا نبطئ البحث بتجربة باقي الصيغ
+            # عندما توجد نتائج بالفعل.
+            if results:
+                break
+        if results or channel_status == "ok" or peer_index == len(peers) - 1:
+            break
+    if not results and channel_status == "unavailable":
+        logger.warning(
+            f"Channel is unavailable to this session, keeping it configured: {ch}"
+        )
     return results
 
 
