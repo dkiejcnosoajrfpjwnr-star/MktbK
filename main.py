@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -293,23 +294,67 @@ async def stop_pyro(app: Application) -> None:
 
 
 # -- البحث ---------------------------------------------------------
+ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+ASCII_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+
+
+def search_variants(query: str) -> list[str]:
+    """ينشئ صيغًا شائعة للبحث العربي مثل ج1، ج 1، جـ1، وج١."""
+    query = query.strip()
+    if not query:
+        return []
+
+    variants = []
+
+    def add(value: str) -> None:
+        value = value.strip()
+        if value and value not in variants:
+            variants.append(value)
+
+    compact_spaces = re.sub(r"\s+", " ", query)
+    add(query)
+    add(compact_spaces)
+    add(compact_spaces.translate(ARABIC_DIGITS))
+    add(compact_spaces.translate(ASCII_DIGITS))
+    add(re.sub(r"\s+", "", compact_spaces))
+    add(re.sub(r"\s+", "", compact_spaces).translate(ARABIC_DIGITS))
+    add(re.sub(r"\s+", "", compact_spaces).translate(ASCII_DIGITS))
+
+    # Telegram قد يفهرس "ج 1" بصورة مختلفة عن "ج1".
+    spaced = re.sub(r"([^\W\d_])(\d)", r"\1 \2", compact_spaces)
+    spaced = re.sub(r"([^\W\d_])([٠-٩])", r"\1 \2", spaced)
+    add(spaced)
+    add(spaced.translate(ASCII_DIGITS))
+    add(spaced.replace(" ", "ـ"))
+    add(spaced.replace(" ", "ـ").translate(ASCII_DIGITS))
+
+    return variants
+
+
 async def _search_single_channel(ch: str, query: str, ids: dict) -> list:
     peer = ids.get(ch) or ch
     results = []
+    seen_message_ids = set()
     try:
-        async for msg in pyro.search_messages(peer, query=query, limit=SEARCH_LIMIT):
-            if not is_pdf(msg):
-                continue
-            name = (msg.document.file_name or "").strip()
-            if not name and msg.caption:
-                name = msg.caption.split("\n")[0].strip()
-            if not name:
-                name = "كتاب PDF"
-            results.append({
-                "name":   name[:80],
-                "chat":   ch,
-                "msg_id": msg.id,
-            })
+        for search_query in search_variants(query):
+            async for msg in pyro.search_messages(
+                peer,
+                query=search_query,
+                limit=SEARCH_LIMIT,
+            ):
+                if msg.id in seen_message_ids or not is_pdf(msg):
+                    continue
+                seen_message_ids.add(msg.id)
+                name = (msg.document.file_name or "").strip()
+                if not name and msg.caption:
+                    name = msg.caption.split("\n")[0].strip()
+                if not name:
+                    name = "كتاب PDF"
+                results.append({
+                    "name":   name[:80],
+                    "chat":   ch,
+                    "msg_id": msg.id,
+                })
     except (PeerIdInvalid, ChannelInvalid, UsernameInvalid, UsernameNotOccupied):
         logger.warning(f"Channel not found or inaccessible, removing: {ch}")
         data = load_data()
