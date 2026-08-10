@@ -68,6 +68,13 @@ RELAY_TIMEOUT    = 60
 SEARCH_LIMIT     = 500
 MAX_SEARCH_SESSIONS = 20
 
+# هذا البوت يعتمد على الشبكة أكثر من اعتماده على حسابات CPU ثقيلة.
+# لذلك نزيد عمّال I/O تلقائيًا بحسب الأنوية المتاحة بدل تشغيل نسخ متعددة
+# من البوت، لأن تشغيل أكثر من نسخة بنفس BOT_TOKEN يسبب تعارضًا في polling.
+_CPU_COUNT = os.cpu_count() or 1
+PYROGRAM_WORKERS = max(4, min(32, _CPU_COUNT * 4))
+UPDATE_WORKERS = max(4, min(64, _CPU_COUNT * 4))
+
 _data_cache: Optional[dict] = None
 _mongo_client = MongoClient(
     MONGODB_URI,
@@ -265,6 +272,7 @@ async def start_pyro(app: Application) -> None:
         api_id=API_ID,
         api_hash=API_HASH,
         session_string=SESSION_STR,
+        workers=PYROGRAM_WORKERS,
     )
     await pyro.start()
     logger.info("Pyrogram connected - loading dialogs cache...")
@@ -534,6 +542,7 @@ def main() -> None:
         Application.builder()
         .token(BOT_TOKEN)
         .persistence(persistence)
+        .concurrent_updates(UPDATE_WORKERS)
         .post_init(start_pyro)
         .post_shutdown(stop_pyro)
         .build()
