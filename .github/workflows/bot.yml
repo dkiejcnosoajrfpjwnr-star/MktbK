@@ -4,11 +4,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  schedule:
-    # احتياطي فقط: يشتغل كل 6 ساعات إذا فشل الإعادة التلقائية
-    - cron: "0 */6 * * *"
 
-# منع تشغيل أكثر من نسخة واحدة في نفس الوقت
+# تشغيل نسخة واحدة فقط.
+# إذا بدأت تشغيلًا يدويًا جديدًا، يُلغى القديم ولا يعيد القديم تشغيل نفسه.
 concurrency:
   group: library-bot
   cancel-in-progress: true
@@ -20,6 +18,7 @@ permissions:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    # نترك وقتًا كافيًا لخطوات الحفظ وإعادة التشغيل قبل حد GitHub.
     timeout-minutes: 350
 
     steps:
@@ -64,7 +63,8 @@ jobs:
           CHANNELS:     ${{ secrets.CHANNELS }}
           MONGODB_URI:  ${{ secrets.MONGODB_URI }}
           MONGODB_DB:   ${{ secrets.MONGODB_DB || 'book_bot' }}
-        run: python main.py
+        # ينهي البوت نفسه قبل 350 دقيقة حتى تعمل خطوة إعادة التشغيل.
+        run: timeout --signal=TERM --kill-after=30s 345m python main.py
 
       # ─── حفظ data.json بعد التوقف ───
       - name: Save data.json
@@ -84,7 +84,9 @@ jobs:
 
       # ─── إعادة تشغيل البوت فوراً بعد الانتهاء (يقلل التأخير إلى ~30 ثانية) ───
       - name: Auto-restart bot
-        if: always()
+        # لا تعِد تشغيله إذا كان GitHub قد ألغى هذا التشغيل
+        # بسبب بدء تشغيل أحدث.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
