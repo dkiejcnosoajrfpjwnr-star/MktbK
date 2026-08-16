@@ -369,7 +369,13 @@ async def search_books(query: str, channels: list) -> list:
 
 
 # -- الريلاي --------------------------------------------------------
-async def _do_relay(chat: str, msg_id: int, destination_chat_id: int, bot) -> None:
+async def _do_relay(
+    chat: str,
+    msg_id: int,
+    destination_chat_id: int,
+    bot,
+    reply_to_message_id: Optional[int] = None,
+) -> None:
     relay_msg = await pyro.copy_message(
         chat_id=RELAY_CHAT_ID,
         from_chat_id=chat,
@@ -381,6 +387,7 @@ async def _do_relay(chat: str, msg_id: int, destination_chat_id: int, bot) -> No
         from_chat_id=RELAY_CHAT_ID,
         message_id=relay_msg.id,
         caption="",
+        reply_to_message_id=reply_to_message_id,
     )
     # تبقى رسالة الكتاب في مجموعة الريلاي ولا يتم حذفها.
 
@@ -390,6 +397,7 @@ async def deliver_via_relay(
     chat: str,
     msg_id: int,
     bot,
+    reply_to_message_id: Optional[int] = None,
 ) -> tuple[bool, str]:
     if not RELAY_CHAT_ID:
         return False, "مجموعة الريلاي غير مضبوطة في السكريت."
@@ -397,7 +405,13 @@ async def deliver_via_relay(
         return False, "عميل Pyrogram غير متصل."
     try:
         await asyncio.wait_for(
-            _do_relay(chat, msg_id, destination_chat_id, bot),
+            _do_relay(
+                chat,
+                msg_id,
+                destination_chat_id,
+                bot,
+                reply_to_message_id,
+            ),
             timeout=RELAY_TIMEOUT,
         )
         return True, ""
@@ -581,11 +595,17 @@ async def cb_send_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     r = results[idx]
     destination_chat_id = q.message.chat.id
+    reply_to_message_id = (
+        q.message.message_id
+        if q.message.chat.type in {"group", "supergroup"}
+        else None
+    )
     success, err = await deliver_via_relay(
         destination_chat_id,
         r["chat"],
         r["msg_id"],
         ctx.bot,
+        reply_to_message_id,
     )
     if not success:
         await q.message.reply_text(f"تعذّر إرسال الملف.\n\nالسبب: {err}")
